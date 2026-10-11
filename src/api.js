@@ -1,4 +1,5 @@
-const API_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+const configuredApiUrl = import.meta.env.VITE_API_URL?.trim();
+const API_URL = (configuredApiUrl || (import.meta.env.DEV ? '/api' : '')).replace(/\/+$/, '');
 const SESSION_KEY = 'stockroom.session';
 let refreshInFlight = null;
 
@@ -18,10 +19,29 @@ export function clearSession() {
   localStorage.removeItem(SESSION_KEY);
 }
 
+async function fetchApi(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch (error) {
+    const reason = error instanceof Error ? ` ${error.message}` : '';
+    throw new Error(
+      `Could not connect to the API at ${url}. Check that the backend is online and allows this frontend origin.${reason}`,
+      { cause: error },
+    );
+  }
+}
+
 async function send(path, options = {}, retried = false) {
+  if (!API_URL) {
+    throw new Error('API URL is not configured. Set VITE_API_URL to your backend URL ending in /api.');
+  }
+
   const session = readSession();
   const isPublicAuthRequest = ['/auth/login', '/auth/register', '/auth/refresh'].includes(path);
   const headers = new Headers(options.headers || {});
+  if (!headers.has('Accept')) {
+    headers.set('Accept', 'application/json');
+  }
   if (options.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
@@ -29,10 +49,10 @@ async function send(path, options = {}, retried = false) {
     headers.set('Authorization', `Bearer ${session.accessToken}`);
   }
 
-  const response = await fetch(`${API_URL}${path}`, { ...options, headers });
+  const response = await fetchApi(`${API_URL}${path}`, { ...options, headers });
   if (response.status === 401 && session?.refreshToken && !retried && !isPublicAuthRequest) {
     if (!refreshInFlight) {
-      refreshInFlight = fetch(`${API_URL}/auth/refresh`, {
+      refreshInFlight = fetchApi(`${API_URL}/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refresh_token: session.refreshToken }),
@@ -61,7 +81,8 @@ async function send(path, options = {}, retried = false) {
 
   const data = response.status === 204 ? {} : await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.error || data.message || `Request failed (${response.status})`);
+    const status = [response.status, response.statusText].filter(Boolean).join(' ');
+    throw new Error(data.error || data.message || `API request failed (${status}).`);
   }
   return data;
 }
